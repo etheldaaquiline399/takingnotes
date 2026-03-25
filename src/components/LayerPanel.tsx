@@ -82,7 +82,7 @@ export function LayerPanel({ layer, isActive, onSelect, onUpdate, onDuplicate, o
         flex items-center h-11 cursor-pointer select-none
         border-b border-neutral-700/50
         ${isActive
-          ? 'bg-[#2a4a7f]'
+          ? 'app-layer-active'
           : 'bg-neutral-800 hover:bg-neutral-700/50'
         }
         ${isDragging ? 'z-50' : ''}

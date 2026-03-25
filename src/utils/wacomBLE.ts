@@ -185,6 +185,10 @@ function decodeBcd(byteValue: number) {
   return ((byteValue >> 4) & 0x0f) * 10 + (byteValue & 0x0f);
 }
 
+function encodeBcd(value: number) {
+  return ((((Math.floor(value / 10)) % 10) << 4) | (value % 10)) & 0xff;
+}
+
 function parseTabletTimestamp(bytes: ArrayLike<number>, offset = 0) {
   if (bytes.length < offset + 6) {
     return Math.floor(Date.now() / 1000);
@@ -197,6 +201,17 @@ function parseTabletTimestamp(bytes: ArrayLike<number>, offset = 0) {
   const minute = clamp(decodeBcd(bytes[offset + 4]), 0, 59);
   const second = clamp(decodeBcd(bytes[offset + 5]), 0, 59);
   return Math.floor(Date.UTC(year, month - 1, day, hour, minute, second) / 1000);
+}
+
+function formatTabletTimestamp(date = new Date()) {
+  return [
+    encodeBcd(date.getUTCFullYear() % 100),
+    encodeBcd(date.getUTCMonth() + 1),
+    encodeBcd(date.getUTCDate()),
+    encodeBcd(date.getUTCHours()),
+    encodeBcd(date.getUTCMinutes()),
+    encodeBcd(date.getUTCSeconds()),
+  ];
 }
 
 function crc32(bytes: Uint8Array) {
@@ -434,8 +449,10 @@ export class WacomSmartPadBLE implements TabletBackendCapabilities {
   private livePenChrc: BluetoothRemoteGATTCharacteristic | null = null;
   private offlinePenChrc: BluetoothRemoteGATTCharacteristic | null = null;
   private pendingReplies: PendingReply[] = [];
+  private receivedMessages: WacomNordicMessage[] = [];
   private rxBuffer: number[] = [];
   private offlinePenDataBuffer: number[] = [];
+  private lastOfflinePenDataAt = 0;
   private disconnectListenerBound = false;
   private disconnectExpected = false;
   private hasSyseventNotifications: boolean | null = null;
@@ -609,9 +626,17 @@ export class WacomSmartPadBLE implements TabletBackendCapabilities {
         return;
       }
     }
+
+    this.receivedMessages.push(message);
   }
 
   private waitForNordicMessage(predicate?: (message: WacomNordicMessage) => boolean, timeoutMs = 6000) {
+    const queuedIndex = this.receivedMessages.findIndex((message) => !predicate || predicate(message));
+    if (queuedIndex !== -1) {
+      const [message] = this.receivedMessages.splice(queuedIndex, 1);
+      return Promise.resolve(message);
+    }
+
     return new Promise<WacomNordicMessage>((resolve, reject) => {
       const timer = window.setTimeout(() => {
         this.pendingReplies = this.pendingReplies.filter((entry) => entry.timer !== timer);
@@ -631,10 +656,43 @@ export class WacomSmartPadBLE implements TabletBackendCapabilities {
       return error;
     }
     if (code === 0x02) {
-      error.message = `INVALID_STATE (${code}): press the button on ${this.deviceName} once, then retry.`;
+      error.message = `INVALID_STATE (${code}): follow the Tuhi sync step and make sure the LED is blue, then press the notebook button once to switch it back to green.`;
       return error;
     }
     return error;
+  }
+
+  private promptForSyncButtonPress(attempt?: number, maxAttempts?: number) {
+    const attemptLabel = attempt != null && maxAttempts != null
+      ? ` (${attempt}/${maxAttempts})`
+      : '';
+    this.setStatus(`Waiting for button press${attemptLabel}...`);
+    this.log(`Tuhi sync step${attemptLabel}: make sure the LED is blue, then press the notebook button once to switch it back to green.`);
+  }
+
+  private isNordicTimeoutError(error: unknown) {
+    return error instanceof Error && /Timed out waiting for tablet reply/.test(error.message);
+  }
+
+  private async waitForOfflineTransferReply(
+    predicate: (message: WacomNordicMessage) => boolean,
+    timeoutMs = 5000,
+  ) {
+    while (true) {
+      try {
+        return await this.waitForNordicMessage(predicate, timeoutMs);
+      } catch (error) {
+        if (!this.isNordicTimeoutError(error)) {
+          throw error;
+        }
+
+        if (Date.now() - this.lastOfflinePenDataAt <= timeoutMs) {
+          continue;
+        }
+
+        throw error;
+      }
+    }
   }
 
   private async writeNordicCommand(opcode: number, args: number[]) {
@@ -642,8 +700,10 @@ export class WacomSmartPadBLE implements TabletBackendCapabilities {
       throw new Error('Nordic TX characteristic is not available.');
     }
 
-    const payload = Uint8Array.from([opcode, args.length, ...args]);
-    this.log(`NUS TX: op=0x${opcode.toString(16)} params=[${bytesToHex(args)}]`);
+    // Tuhi models these Nordic commands as always carrying at least one byte.
+    const params = args.length > 0 ? args : [0x00];
+    const payload = Uint8Array.from([opcode, params.length, ...params]);
+    this.log(`NUS TX: op=0x${opcode.toString(16)} params=[${bytesToHex(params)}]`);
     if (typeof this.nordicTx.writeValueWithoutResponse === 'function') {
       await this.nordicTx.writeValueWithoutResponse(payload);
       return;
@@ -745,8 +805,10 @@ export class WacomSmartPadBLE implements TabletBackendCapabilities {
     this.livePenChrc = null;
     this.offlinePenChrc = null;
     this.hasSyseventNotifications = null;
+    this.receivedMessages = [];
     this.rxBuffer = [];
     this.offlinePenDataBuffer = [];
+    this.lastOfflinePenDataAt = 0;
     this.streaming = false;
 
     const disconnectError = new Error('Bluetooth disconnected.');
@@ -800,6 +862,7 @@ export class WacomSmartPadBLE implements TabletBackendCapabilities {
     }
 
     const packet = Array.from(new Uint8Array(view.buffer, view.byteOffset, view.byteLength));
+    this.lastOfflinePenDataAt = Date.now();
     this.offlinePenDataBuffer.push(...packet);
   };
 
@@ -869,7 +932,7 @@ export class WacomSmartPadBLE implements TabletBackendCapabilities {
       if (reply.opcode === 0x51) {
         const reason = reply.payload.length >= 7 ? reply.payload[6] : 0xff;
         if ((reason === 0x00 || reason === 0x03) && attempt < maxAttempts) {
-          this.log(`Device not ready yet (${attempt}/${maxAttempts}). Press the button once now...`);
+          this.promptForSyncButtonPress(attempt, maxAttempts);
           await new Promise((resolve) => window.setTimeout(resolve, 1400));
           continue;
         }
@@ -885,7 +948,7 @@ export class WacomSmartPadBLE implements TabletBackendCapabilities {
 
       const error = this.parseAckError(reply.payload);
       if (/INVALID_STATE/.test(error.message) && attempt < maxAttempts) {
-        this.log(`Device not ready yet (${attempt}/${maxAttempts}). Press the button once now...`);
+        this.promptForSyncButtonPress(attempt, maxAttempts);
         await new Promise((resolve) => window.setTimeout(resolve, 1400));
         continue;
       }
@@ -939,12 +1002,19 @@ export class WacomSmartPadBLE implements TabletBackendCapabilities {
     this.log(`Dimensions: ${this.config.width} x ${this.config.height}`);
   }
 
-  private async primeSparkOfflineTransfer() {
-    if (!this.isSparkModel()) {
-      return;
-    }
-
+  private async primeOfflineTransfer() {
     const reply = await this.sendNordicCommand(0xe3, [], (message) => message.opcode === 0xb3);
+    if (reply.payload[0] !== 0x00) {
+      throw this.parseAckError(reply.payload);
+    }
+  }
+
+  private async setTabletTime() {
+    const reply = await this.sendNordicCommand(
+      0xb6,
+      formatTabletTimestamp(),
+      (message) => message.opcode === 0xb3,
+    );
     if (reply.payload[0] !== 0x00) {
       throw this.parseAckError(reply.payload);
     }
@@ -1020,9 +1090,8 @@ export class WacomSmartPadBLE implements TabletBackendCapabilities {
   }
 
   private async waitForOfflineTransferCompletion() {
-    const endReply = await this.waitForNordicMessage(
-      (message) => message.opcode === 0xc8 || message.opcode === 0xb3,
-      45000,
+    const endReply = await this.waitForOfflineTransferReply(
+      (message) => message.opcode === 0xb3 || (message.opcode === 0xc8 && message.payload[0] === 0xed),
     );
     if (endReply.opcode === 0xb3) {
       throw this.parseAckError(endReply.payload);
@@ -1032,9 +1101,8 @@ export class WacomSmartPadBLE implements TabletBackendCapabilities {
     }
 
     if (this.isSparkModel()) {
-      const crcReply = await this.waitForNordicMessage(
+      const crcReply = await this.waitForOfflineTransferReply(
         (message) => message.opcode === 0xc9 || message.opcode === 0xb3,
-        6000,
       );
       if (crcReply.opcode === 0xb3) {
         throw this.parseAckError(crcReply.payload);
@@ -1172,11 +1240,12 @@ export class WacomSmartPadBLE implements TabletBackendCapabilities {
     if (!this.authenticated) {
       await this.connect(this.currentUuid);
     }
+    await this.setTabletTime();
 
     this.setStatus('Downloading...');
     this.log(`Pulling drawings from ${this.isSparkModel() ? 'Spark' : 'Slate/Folio'} notebook memory...`);
 
-    await this.primeSparkOfflineTransfer();
+    await this.primeOfflineTransfer();
 
     const paperModeReply = await this.sendNordicCommand(0xb1, [0x01], (message) => message.opcode === 0xb3);
     if (paperModeReply.payload[0] !== 0x00) {
@@ -1205,10 +1274,11 @@ export class WacomSmartPadBLE implements TabletBackendCapabilities {
       }
 
       this.offlinePenDataBuffer = [];
+      this.lastOfflinePenDataAt = 0;
       const startReply = await this.sendNordicCommand(
         0xc3,
         [],
-        (message) => message.opcode === 0xc8 || message.opcode === 0xb3,
+        (message) => message.opcode === 0xb3 || (message.opcode === 0xc8 && message.payload[0] === 0xbe),
       );
       if (startReply.opcode === 0xb3) {
         throw this.parseAckError(startReply.payload);
@@ -1292,8 +1362,10 @@ export class WacomSmartPadBLE implements TabletBackendCapabilities {
       }
     } finally {
       this.clearPendingReplies(new Error('Bluetooth disconnected.'));
+      this.receivedMessages = [];
       this.rxBuffer = [];
       this.offlinePenDataBuffer = [];
+      this.lastOfflinePenDataAt = 0;
       this.nordicTx = null;
       this.nordicRx = null;
       this.livePenChrc = null;

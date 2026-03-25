@@ -69,6 +69,11 @@
     width: 100%;
     height: 100%;
   }
+  @supports (height: 100dvh) {
+    html, body, #root {
+      height: 100dvh;
+    }
+  }
   html {
     font-family: var(--font-ui);
     text-rendering: optimizeLegibility;
@@ -81,6 +86,8 @@
     line-height: 1.35;
     letter-spacing: 0.01em;
     overflow: hidden;
+    overscroll-behavior: none;
+    -webkit-tap-highlight-color: transparent;
   }
   button,
   input,
@@ -135,6 +142,15 @@ canvas {
   border-radius: 0 0 0.5rem 0.5rem;
 }
 
+.react-colorful .react-colorful__pointer {
+  transform: translate(-50%, -50%) scale(0.65) !important;
+  transform-origin: center !important;
+}
+
+.react-colorful .react-colorful__interactive:focus .react-colorful__pointer {
+  transform: translate(-50%, -50%) scale(0.715) !important;
+}
+
 /* Animation keyframes */
 @keyframes pulse-record {
   0%, 100% {
@@ -173,6 +189,100 @@ canvas {
 .no-select {
   user-select: none;
   -webkit-user-select: none;
+}
+
+.app-shell {
+  min-height: 100vh;
+  height: 100vh;
+}
+
+@supports (height: 100dvh) {
+  .app-shell {
+    min-height: 100dvh;
+    height: 100dvh;
+  }
+}
+
+.app-safe-top {
+  padding-top: env(safe-area-inset-top, 0px);
+}
+
+.app-safe-bottom {
+  padding-bottom: env(safe-area-inset-bottom, 0px);
+}
+
+.app-mobile-dock {
+  min-height: calc(72px + env(safe-area-inset-bottom, 0px));
+}
+
+.app-mobile-panel {
+  bottom: calc(72px + env(safe-area-inset-bottom, 0px));
+}
+
+.app-canvas-stage {
+  background: radial-gradient(circle at top, #182231 0%, #10161f 44%, #0a0e13 100%);
+}
+
+.memory-library-hero {
+  background:
+    radial-gradient(circle at 12% 0%, rgba(72, 139, 236, 0.28) 0%, rgba(72, 139, 236, 0.12) 24%, rgba(8, 12, 18, 0) 50%),
+    linear-gradient(180deg, #131a25 0%, #0f1520 58%, #0a0f16 100%);
+}
+
+.memory-library-kicker {
+  color: #8cbfff;
+}
+
+.memory-library-surface {
+  background: linear-gradient(180deg, rgba(20, 24, 34, 0.98) 0%, rgba(13, 16, 23, 0.98) 100%);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.035);
+}
+
+.app-layer-active {
+  background: linear-gradient(180deg, #335f9f 0%, #244a7e 100%);
+}
+
+.tablet-status-card {
+  background: linear-gradient(180deg, rgba(58, 58, 58, 0.96) 0%, rgba(34, 34, 34, 0.96) 100%);
+  border-color: #474747;
+}
+
+.tablet-warning {
+  background: #3a3520;
+  border-color: #554820;
+}
+
+.tablet-log-surface {
+  background: #141414;
+  border-color: #333;
+}
+
+.tablet-disconnect {
+  background: linear-gradient(180deg, #2e2e2e 0%, #262626 100%);
+  border-color: #444;
+}
+
+.tablet-ps-button {
+  background: linear-gradient(180deg, #3c3c3c 0%, #303030 100%);
+  border-color: #555;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.04);
+}
+
+.tablet-ps-button-active {
+  background: linear-gradient(180deg, #1a3a5a 0%, #142a44 100%);
+  border-color: #3b82f6;
+  box-shadow: 0 0 8px rgba(59, 130, 246, 0.25);
+}
+
+.tablet-device-button {
+  background: linear-gradient(180deg, #363636 0%, #2c2c2c 100%);
+  border-color: #4a4a4a;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.03);
+}
+
+.tablet-device-meta {
+  border-color: #555;
+  background: rgba(255, 255, 255, 0.03);
 }
 
 .app-right-tabs {
@@ -295,9 +405,107 @@ canvas {
   background-color: #dbe4ef !important;
 }
 
+.light .bg-neutral-900\/95 {
+  background-color: rgba(248, 250, 252, 0.95) !important;
+}
+
+.light .bg-neutral-900\/80 {
+  background-color: rgba(248, 250, 252, 0.8) !important;
+}
+
+.light .bg-neutral-900\/70 {
+  background-color: rgba(248, 250, 252, 0.72) !important;
+}
+
+.light .bg-neutral-800\/95 {
+  background-color: rgba(237, 242, 247, 0.95) !important;
+}
+
+.light .bg-neutral-700\/80 {
+  background-color: rgba(226, 232, 240, 0.82) !important;
+}
+
+.light .border-neutral-700\/80,
+.light .border-neutral-700\/60,
+.light .border-neutral-700\/50 {
+  border-color: rgba(148, 163, 184, 0.42) !important;
+}
+
 .light .app-right-tabs {
   background: linear-gradient(180deg, rgba(245, 248, 252, 0.98) 0%, rgba(236, 241, 247, 0.98) 100%);
   border-bottom-color: rgba(148, 163, 184, 0.32);
+}
+
+.light .app-mobile-dock {
+  background: rgba(248, 250, 252, 0.98);
+  border-top-color: rgba(148, 163, 184, 0.42);
+}
+
+.light .app-mobile-panel {
+  background: rgba(237, 242, 247, 0.96);
+  border-color: rgba(148, 163, 184, 0.42);
+}
+
+.light .app-layer-active {
+  background: linear-gradient(180deg, #dbeafe 0%, #c7dcfb 100%);
+}
+
+.light .memory-library-hero {
+  background:
+    radial-gradient(circle at 12% 0%, rgba(96, 165, 250, 0.22) 0%, rgba(191, 219, 254, 0.16) 24%, rgba(255, 255, 255, 0) 54%),
+    linear-gradient(180deg, rgba(249, 252, 255, 0.98) 0%, rgba(236, 243, 251, 0.98) 100%);
+}
+
+.light .memory-library-kicker {
+  color: #3b82f6;
+}
+
+.light .memory-library-surface {
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.98) 0%, rgba(242, 247, 253, 0.98) 100%);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.92);
+}
+
+.light .tablet-status-card {
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.98) 0%, rgba(241, 245, 249, 0.98) 100%);
+  border-color: #cbd5e1;
+}
+
+.light .tablet-warning {
+  background: #fff7db;
+  border-color: #e4c76a;
+}
+
+.light .tablet-log-surface {
+  background: #ffffff;
+  border-color: #cbd5e1;
+}
+
+.light .tablet-disconnect {
+  background: linear-gradient(180deg, #ffffff 0%, #f8fafc 100%);
+  border-color: #cbd5e1;
+}
+
+.light .tablet-ps-button {
+  background: linear-gradient(180deg, #ffffff 0%, #eef4fb 100%);
+  border-color: #cbd5e1;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.85);
+}
+
+.light .tablet-ps-button-active {
+  background: linear-gradient(180deg, #dbeafe 0%, #c7dcfb 100%);
+  border-color: #60a5fa;
+  box-shadow: 0 0 0 1px rgba(96, 165, 250, 0.12);
+}
+
+.light .tablet-device-button {
+  background: linear-gradient(180deg, #ffffff 0%, #f2f6fb 100%);
+  border-color: #cbd5e1;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.9);
+}
+
+.light .tablet-device-meta {
+  border-color: #cbd5e1;
+  background: rgba(241, 245, 249, 0.95);
 }
 
 .light .app-right-tab {

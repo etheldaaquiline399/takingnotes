@@ -1,12 +1,10 @@
-DISCLAIMER: For transparency's sake (mainly because I don't want to take unfair credit for stuff): the research and testing here was done by me (as you can see on www.f4mi.com on the video where we talk about this), I did end up using local LLMs to help me with building the websites based on that research and cleaning up/helping me with docs/pushing some stuff to GitHub, as I said in the video I don't know shit and I am pretty much learning on the fly. Some of them for some reason (which I mean, isn't that mysterious if you consider how the sausage is made) think they are Claude. So if you see Claude mentions here, that's why lol
-
 # takingnotes.ink
 
-Drawing and animation studio for the Huion X10 and the Wacom Slate/Spark series of smart notebooks that runs in the browser. Built with React, TypeScript, and Vite.
+Drawing and animation studio for the Huion X10 and the Wacom Slate/Spark series of smart notebooks that runs in the browser, with experimental mobile support. Built with React, TypeScript, and Vite.
 
 Wacom SmartPad support in this project was informed by the [tuhi project](https://github.com/tuhiproject/tuhi).
 
-Supports layered canvas editing, animation timeline with playback/export, and pen tablet input via Web Bluetooth and WebHID.
+Supports layered canvas editing, animation timeline with playback/export, experimental mobile support, and pen tablet input via Web Bluetooth and WebHID.
 
 ## Quick Start
 
@@ -79,7 +77,7 @@ Web Bluetooth and WebHID need HTTPS in Chrome or Edge. Cloudflare Pages serves o
 Pen tablet features (Huion, Wacom) require Chrome or Edge and an HTTPS connection.
 
 ## What works
-Drawing live from both Wacom and Huion smart notebooks, downloading from Huion ones
+Drawing live from both Wacom and Huion smart notebooks, plus notebook page download from both device families and experimental mobile support
 
 ## Todo
-Fix small UI bugs, re-implement Wacom memory download
+Fix small UI bugs

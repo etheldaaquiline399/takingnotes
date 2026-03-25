@@ -1,4 +1,4 @@
-import { useState, useRef, useCallback, useEffect, useMemo } from 'react';
+import { useState, useRef, useCallback, useEffect, useLayoutEffect, useMemo } from 'react';
 import { DndContext, closestCenter, KeyboardSensor, PointerSensor, useSensor, useSensors } from '@dnd-kit/core';
 import { arrayMove, SortableContext, sortableKeyboardCoordinates, verticalListSortingStrategy } from '@dnd-kit/sortable';
 import { 
@@ -56,14 +56,20 @@ const APP_NAME = 'takingnotes.ink';
 const APP_ID = 'takingnotes.ink';
 const LEGACY_APP_IDS = new Set(['takingnotes.ink', 'noteworthy.stream']);
 const PROJECT_EXTENSION = '.tnk';
+const NOTEBOOK_LIBRARY_EXPORT_KIND = 'downloaded-notebook-library';
 const MEMORY_LIBRARY_STORAGE_KEY = 'takingnotes_downloaded_memory';
 const NOTEBOOK_NAME_STORAGE_KEY = 'takingnotes_notebook_names';
 const HUION_MEMORY_STROKE_GAP_SPLIT_DISTANCE = 80;
 const MIN_ZOOM = 10;
 const MAX_ZOOM = 500;
 const ZOOM_STEP = 10;
+const ZOOM_ANIMATION_MIN_DURATION_MS = 110;
+const ZOOM_ANIMATION_MAX_DURATION_MS = 220;
+const WHEEL_LINE_HEIGHT_PX = 16;
+const WHEEL_ZOOM_SENSITIVITY = 0.0022;
 const FIT_CANVAS_PADDING_PX = 32;
 const FIT_CANVAS_BUFFER_PX = 32;
+const MOBILE_BREAKPOINT_PX = 1024;
 type CanvasViewRotation = 0 | 90 | 180 | 270;
 
 interface ViewportTouchGesture {
@@ -71,6 +77,16 @@ interface ViewportTouchGesture {
   initialZoom: number;
   midpointClientX: number;
   midpointClientY: number;
+}
+
+interface PendingZoomAnchor {
+  viewportX: number;
+  viewportY: number;
+  previousZoom: number;
+  stageRatioX?: number;
+  stageRatioY?: number;
+  contentX?: number;
+  contentY?: number;
 }
 
 interface SerializedProjectLayer {
@@ -262,6 +278,55 @@ function normalizeDownloadedNotebook(
   };
 }
 
+function extractDownloadedNotebookArchive(
+  raw: any, // eslint-disable-line @typescript-eslint/no-explicit-any
+  notebookNameRegistry: NotebookNameRegistry,
+) {
+  const notebookCandidates: any[] = Array.isArray(raw) // eslint-disable-line @typescript-eslint/no-explicit-any
+    ? raw
+    : raw?.kind === NOTEBOOK_LIBRARY_EXPORT_KIND && Array.isArray(raw?.notebooks)
+      ? raw.notebooks
+      : Array.isArray(raw?.notebooks)
+        ? raw.notebooks
+        : raw && typeof raw === 'object' && Array.isArray(raw?.pages)
+          ? [raw]
+          : [];
+
+  return notebookCandidates
+    .map((entry: any) => normalizeDownloadedNotebook(entry, notebookNameRegistry)) // eslint-disable-line @typescript-eslint/no-explicit-any
+    .filter((entry): entry is DownloadedMemoryNotebook => entry != null);
+}
+
+function mergeDownloadedNotebookLibrary(
+  existing: DownloadedMemoryNotebook[],
+  imported: DownloadedMemoryNotebook[],
+) {
+  if (imported.length === 0) {
+    return existing;
+  }
+
+  const merged: DownloadedMemoryNotebook[] = [];
+  const seenIds = new Set<string>();
+
+  for (const notebook of imported) {
+    if (seenIds.has(notebook.id)) {
+      continue;
+    }
+    merged.push(notebook);
+    seenIds.add(notebook.id);
+  }
+
+  for (const notebook of existing) {
+    if (seenIds.has(notebook.id)) {
+      continue;
+    }
+    merged.push(notebook);
+    seenIds.add(notebook.id);
+  }
+
+  return merged;
+}
+
 function clampZoom(value: number) {
   const rounded = Math.round(value / ZOOM_STEP) * ZOOM_STEP;
   return Math.max(MIN_ZOOM, Math.min(MAX_ZOOM, rounded));
@@ -269,6 +334,25 @@ function clampZoom(value: number) {
 
 function clampZoomSmooth(value: number) {
   return Math.max(MIN_ZOOM, Math.min(MAX_ZOOM, value));
+}
+
+function getZoomAnimationDuration(fromZoom: number, toZoom: number) {
+  const delta = Math.abs(toZoom - fromZoom);
+  return Math.max(
+    ZOOM_ANIMATION_MIN_DURATION_MS,
+    Math.min(ZOOM_ANIMATION_MAX_DURATION_MS, 90 + delta * 1.2),
+  );
+}
+
+function normalizeWheelDeltaY(event: WheelEvent, viewportHeight: number) {
+  switch (event.deltaMode) {
+    case WheelEvent.DOM_DELTA_LINE:
+      return event.deltaY * WHEEL_LINE_HEIGHT_PX;
+    case WheelEvent.DOM_DELTA_PAGE:
+      return event.deltaY * viewportHeight;
+    default:
+      return event.deltaY;
+  }
 }
 
 function normalizeCanvasRotation(value: number): CanvasViewRotation {
@@ -295,6 +379,14 @@ function getFrequentReadContext(canvas: HTMLCanvasElement): CanvasRenderingConte
   return canvas.getContext('2d', { willReadFrequently: true }) ?? canvas.getContext('2d')!;
 }
 
+function getIsMobileLayout() {
+  if (typeof window === 'undefined') {
+    return false;
+  }
+
+  return window.innerWidth < MOBILE_BREAKPOINT_PX;
+}
+
 function App() {
   // Core State
   const [layers, setLayers] = useState<Layer[]>([]);
@@ -318,6 +410,7 @@ function App() {
   
   // Canvas State
   const [zoom, setZoom] = useState(100);
+  const [displayZoom, setDisplayZoom] = useState(100);
   const [canvasRotation, setCanvasRotation] = useState<CanvasViewRotation>(0);
   const [canvasSize, setCanvasSize] = useState({ width: 800, height: 600 });
   const [backgroundSettings, setBackgroundSettings] = useState<BackgroundSettings>({
@@ -404,6 +497,8 @@ function App() {
   const [fpsDraft, setFpsDraft] = useState(String(60));
   const [zoomDraft, setZoomDraft] = useState(String(100));
   const [layerOpacityDraft, setLayerOpacityDraft] = useState(String(100));
+  const [isMobileLayout, setIsMobileLayout] = useState(() => getIsMobileLayout());
+  const [mobileInspectorOpen, setMobileInspectorOpen] = useState(false);
 
   // Drawing Tablet mode — cursor overlay + streaming indicator
   const [blePenCursor, setBlePenCursor] = useState<{ x: number; y: number; pressure: number; active: boolean } | null>(null);
@@ -466,15 +561,28 @@ function App() {
   activeLayerIdRef.current = activeLayerId;
   const canvasViewportRef = useRef<HTMLDivElement | null>(null);
   const panDragRef = useRef<{ startX: number; startY: number; scrollLeft: number; scrollTop: number } | null>(null);
-  const pendingZoomAnchorRef = useRef<{
-    contentX: number;
-    contentY: number;
-    viewportX: number;
-    viewportY: number;
-    previousZoom: number;
-  } | null>(null);
+  const canvasStageRef = useRef<HTMLDivElement | null>(null);
+  const pendingZoomAnchorRef = useRef<PendingZoomAnchor | null>(null);
   const touchGestureRef = useRef<ViewportTouchGesture | null>(null);
   const viewportScrollAnimationRef = useRef<number | null>(null);
+  const zoomAnimationRef = useRef<number | null>(null);
+  const displayZoomRef = useRef(displayZoom);
+  displayZoomRef.current = displayZoom;
+  const pendingCenterAfterZoomRef = useRef(false);
+
+  useEffect(() => {
+    const syncLayout = () => setIsMobileLayout(getIsMobileLayout());
+
+    syncLayout();
+    window.addEventListener('resize', syncLayout);
+    return () => window.removeEventListener('resize', syncLayout);
+  }, []);
+
+  useEffect(() => {
+    if (!isMobileLayout) {
+      setMobileInspectorOpen(false);
+    }
+  }, [isMobileLayout]);
 
   const appendAnimationStroke = useCallback((stroke: Stroke) => {
     if (!stroke.points.length) return;
@@ -813,6 +921,12 @@ function App() {
   const applyZoomRef = useRef<(v: number) => void>(() => {});
   const fitCanvasToViewportRef = useRef<() => void>(() => {});
 
+  const cancelZoomAnimation = useCallback(() => {
+    if (zoomAnimationRef.current == null) return;
+    cancelAnimationFrame(zoomAnimationRef.current);
+    zoomAnimationRef.current = null;
+  }, []);
+
   const cancelViewportScrollAnimation = useCallback(() => {
     if (viewportScrollAnimationRef.current == null) return;
     cancelAnimationFrame(viewportScrollAnimationRef.current);
@@ -872,6 +986,10 @@ function App() {
     };
     viewportScrollAnimationRef.current = requestAnimationFrame(step);
   }, [cancelViewportScrollAnimation]);
+
+  useEffect(() => () => {
+    cancelZoomAnimation();
+  }, [cancelZoomAnimation]);
 
   const handleNewProject = useCallback(() => {
     if (animationRef.current) {
@@ -1395,28 +1513,42 @@ function App() {
 
   const applyZoom = useCallback((nextZoom: number, anchor?: { clientX: number; clientY: number }, mode: 'stepped' | 'smooth' = 'stepped') => {
     const safeZoom = mode === 'smooth' ? clampZoomSmooth(nextZoom) : clampZoom(nextZoom);
-    if (safeZoom === zoom) return;
+    if (safeZoom === zoomRef.current) return;
 
     const viewport = canvasViewportRef.current;
     if (viewport) {
       const rect = viewport.getBoundingClientRect();
+      const stageRect = canvasStageRef.current?.getBoundingClientRect();
       const effectiveAnchor = anchor ?? {
         clientX: rect.left + rect.width / 2,
         clientY: rect.top + rect.height / 2,
       };
-      pendingZoomAnchorRef.current = {
-        contentX: viewport.scrollLeft + (effectiveAnchor.clientX - rect.left),
-        contentY: viewport.scrollTop + (effectiveAnchor.clientY - rect.top),
-        viewportX: effectiveAnchor.clientX - rect.left,
-        viewportY: effectiveAnchor.clientY - rect.top,
-        previousZoom: zoom,
-      };
+      const viewportX = effectiveAnchor.clientX - rect.left;
+      const viewportY = effectiveAnchor.clientY - rect.top;
+
+      if (stageRect && stageRect.width > 0 && stageRect.height > 0) {
+        pendingZoomAnchorRef.current = {
+          viewportX,
+          viewportY,
+          previousZoom: displayZoomRef.current,
+          stageRatioX: (effectiveAnchor.clientX - stageRect.left) / stageRect.width,
+          stageRatioY: (effectiveAnchor.clientY - stageRect.top) / stageRect.height,
+        };
+      } else {
+        pendingZoomAnchorRef.current = {
+          viewportX,
+          viewportY,
+          previousZoom: displayZoomRef.current,
+          contentX: viewport.scrollLeft + viewportX,
+          contentY: viewport.scrollTop + viewportY,
+        };
+      }
     } else {
       pendingZoomAnchorRef.current = null;
     }
 
     setZoom(safeZoom);
-  }, [zoom]);
+  }, []);
   applyZoomRef.current = applyZoom;
 
   const handleCanvasViewportWheel = useCallback((event: WheelEvent) => {
@@ -1425,34 +1557,21 @@ function App() {
 
     event.preventDefault();
 
-    const trackpadLike =
-      event.deltaMode === WheelEvent.DOM_DELTA_PIXEL
-      && (event.ctrlKey || Math.abs(event.deltaX) > 0 || (Math.abs(event.deltaY) > 0 && Math.abs(event.deltaY) < 40));
-
-    if (trackpadLike) {
-      if (event.ctrlKey) {
-        const pinchScale = Math.exp(-event.deltaY * 0.0035);
-        applyZoom(
-          zoomRef.current * pinchScale,
-          { clientX: event.clientX, clientY: event.clientY },
-          'smooth',
-        );
-        return;
-      }
-
+    if (!event.ctrlKey && Math.abs(event.deltaY) < 0.01 && Math.abs(event.deltaX) > 0) {
       scrollViewportTo(
         viewport.scrollLeft + event.deltaX,
-        viewport.scrollTop + event.deltaY,
+        viewport.scrollTop,
         { immediate: true },
       );
       return;
     }
 
-    const direction = event.deltaY < 0 ? 1 : -1;
-    applyZoom(zoomRef.current + direction * ZOOM_STEP, {
+    const normalizedDeltaY = normalizeWheelDeltaY(event, viewport.clientHeight);
+    const zoomScale = Math.exp(-normalizedDeltaY * WHEEL_ZOOM_SENSITIVITY);
+    applyZoom(zoomRef.current * zoomScale, {
       clientX: event.clientX,
       clientY: event.clientY,
-    });
+    }, 'smooth');
   }, [applyZoom, scrollViewportTo]);
 
   // Attach wheel listener natively with { passive: false } so preventDefault actually works.
@@ -1470,20 +1589,42 @@ function App() {
     };
   }, [handleCanvasViewportWheel]);
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     const viewport = canvasViewportRef.current;
     const anchor = pendingZoomAnchorRef.current;
     if (!viewport || !anchor || anchor.previousZoom === 0) return;
 
-    const zoomRatio = zoom / anchor.previousZoom;
-    const zoomDelta = Math.abs(zoom - anchor.previousZoom);
-    scrollViewportTo(
-      anchor.contentX * zoomRatio - anchor.viewportX,
-      anchor.contentY * zoomRatio - anchor.viewportY,
-      { immediate: zoomDelta > 40, durationMs: zoomDelta > 20 ? 110 : 150 },
-    );
-    pendingZoomAnchorRef.current = null;
-  }, [zoom, scrollViewportTo]);
+    const zoomRatio = displayZoom / anchor.previousZoom;
+    const viewportRect = viewport.getBoundingClientRect();
+    const stageRect = canvasStageRef.current?.getBoundingClientRect();
+
+    if (
+      stageRect
+      && stageRect.width > 0
+      && stageRect.height > 0
+      && typeof anchor.stageRatioX === 'number'
+      && typeof anchor.stageRatioY === 'number'
+    ) {
+      const anchoredViewportX = stageRect.left - viewportRect.left + anchor.stageRatioX * stageRect.width;
+      const anchoredViewportY = stageRect.top - viewportRect.top + anchor.stageRatioY * stageRect.height;
+
+      scrollViewportTo(
+        viewport.scrollLeft + anchoredViewportX - anchor.viewportX,
+        viewport.scrollTop + anchoredViewportY - anchor.viewportY,
+        { immediate: true },
+      );
+    } else if (typeof anchor.contentX === 'number' && typeof anchor.contentY === 'number') {
+      scrollViewportTo(
+        anchor.contentX * zoomRatio - anchor.viewportX,
+        anchor.contentY * zoomRatio - anchor.viewportY,
+        { immediate: true },
+      );
+    }
+
+    if (Math.abs(displayZoom - zoomRef.current) < 0.01) {
+      pendingZoomAnchorRef.current = null;
+    }
+  }, [displayZoom, scrollViewportTo]);
 
   const centerCanvasViewport = useCallback(() => {
     const viewport = canvasViewportRef.current;
@@ -1494,6 +1635,58 @@ function App() {
       { durationMs: 180 },
     );
   }, [scrollViewportTo]);
+
+  useEffect(() => {
+    const startZoom = displayZoomRef.current;
+    const targetZoom = zoom;
+
+    if (Math.abs(targetZoom - startZoom) < 0.01) {
+      cancelZoomAnimation();
+      if (displayZoomRef.current !== targetZoom) {
+        setDisplayZoom(targetZoom);
+      }
+      if (pendingCenterAfterZoomRef.current) {
+        pendingCenterAfterZoomRef.current = false;
+        requestAnimationFrame(() => {
+          centerCanvasViewport();
+        });
+      }
+      return;
+    }
+
+    cancelZoomAnimation();
+    const startedAt = performance.now();
+    const durationMs = getZoomAnimationDuration(startZoom, targetZoom);
+
+    const step = (timestamp: number) => {
+      const latestTargetZoom = zoomRef.current;
+      if (latestTargetZoom !== targetZoom) {
+        zoomAnimationRef.current = null;
+        return;
+      }
+
+      const progress = Math.min(1, (timestamp - startedAt) / durationMs);
+      const eased = 1 - Math.pow(1 - progress, 3);
+      const nextZoom = startZoom + (targetZoom - startZoom) * eased;
+      setDisplayZoom(progress >= 1 ? targetZoom : nextZoom);
+
+      if (progress < 1) {
+        zoomAnimationRef.current = requestAnimationFrame(step);
+        return;
+      }
+
+      zoomAnimationRef.current = null;
+      if (pendingCenterAfterZoomRef.current) {
+        pendingCenterAfterZoomRef.current = false;
+        requestAnimationFrame(() => {
+          centerCanvasViewport();
+        });
+      }
+    };
+
+    zoomAnimationRef.current = requestAnimationFrame(step);
+    return cancelZoomAnimation;
+  }, [cancelZoomAnimation, centerCanvasViewport, zoom]);
 
   const fitCanvasToViewport = useCallback(() => {
     const viewport = canvasViewportRef.current;
@@ -1514,14 +1707,25 @@ function App() {
       ),
     );
 
+    if (Math.abs(nextZoom - zoomRef.current) < 0.01 && Math.abs(nextZoom - displayZoomRef.current) < 0.01) {
+      centerCanvasViewport();
+      return;
+    }
+
+    pendingCenterAfterZoomRef.current = true;
     applyZoom(nextZoom, undefined, 'smooth');
-    requestAnimationFrame(() => {
-      requestAnimationFrame(() => {
-        centerCanvasViewport();
-      });
-    });
   }, [applyZoom, canvasRotation, canvasSize.height, canvasSize.width, centerCanvasViewport]);
   fitCanvasToViewportRef.current = fitCanvasToViewport;
+
+  useEffect(() => {
+    if (!isMobileLayout) return;
+
+    const frame = window.requestAnimationFrame(() => {
+      fitCanvasToViewport();
+    });
+
+    return () => window.cancelAnimationFrame(frame);
+  }, [fitCanvasToViewport, isMobileLayout]);
 
   const getViewportCenterAnchor = useCallback(() => {
     const viewport = canvasViewportRef.current;
@@ -1706,8 +1910,14 @@ function App() {
   const importProjectFile = useCallback(async (file: File) => {
     const text = await file.text();
     const data = JSON.parse(text);
+    const importedNotebookArchive = extractDownloadedNotebookArchive(data, notebookNameRegistry);
+    if (importedNotebookArchive.length > 0) {
+      setDownloadedNotebooks((prev) => mergeDownloadedNotebookLibrary(prev, importedNotebookArchive));
+      setActivePage('memory');
+      return;
+    }
     await applyProjectData(data);
-  }, [applyProjectData]);
+  }, [applyProjectData, notebookNameRegistry]);
 
   // Project Save/Load
   const saveProject = useCallback(() => {
@@ -1750,16 +1960,16 @@ function App() {
   const openFile = useCallback(() => {
     const input = document.createElement('input');
     input.type = 'file';
-    input.accept = `image/*,${PROJECT_EXTENSION},.nws`;
+    input.accept = `image/*,${PROJECT_EXTENSION},.nws,.json`;
     input.onchange = (ev) => {
       const file = (ev.target as HTMLInputElement).files?.[0];
       if (!file) return;
-      if (file.name.endsWith(PROJECT_EXTENSION) || file.name.endsWith('.nws')) {
+      if (file.name.endsWith(PROJECT_EXTENSION) || file.name.endsWith('.nws') || file.name.endsWith('.json')) {
         (async () => {
           try {
             await importProjectFile(file);
           } catch (err) {
-            alert('Failed to load project: ' + (err as Error).message);
+            alert('Failed to open file: ' + (err as Error).message);
           }
         })();
       } else {
@@ -2307,6 +2517,45 @@ function App() {
     setDownloadedNotebooks((prev) => prev.filter((notebook) => notebook.id !== notebookId));
   }, []);
 
+  const downloadAllDownloadedNotebooks = useCallback(() => {
+    if (downloadedNotebooks.length === 0) {
+      return;
+    }
+
+    const exportData = {
+      app: APP_ID,
+      kind: NOTEBOOK_LIBRARY_EXPORT_KIND,
+      exportedAt: Date.now(),
+      notebooks: downloadedNotebooks,
+    };
+
+    const json = JSON.stringify(exportData, null, 2);
+    const blob = new Blob([json], { type: 'application/json' });
+    const link = document.createElement('a');
+    const exportTimestamp = new Date().toISOString().replace(/[:.]/g, '-');
+    link.download = `takingnotes-notebook-downloads-${exportTimestamp}.json`;
+    link.href = URL.createObjectURL(blob);
+    link.click();
+    setTimeout(() => URL.revokeObjectURL(link.href), 1000);
+  }, [downloadedNotebooks]);
+
+  const importDownloadedNotebookArchive = useCallback(() => {
+    const input = document.createElement('input');
+    input.type = 'file';
+    input.accept = '.json';
+    input.onchange = (event) => {
+      const file = (event.target as HTMLInputElement).files?.[0];
+      if (!file) {
+        return;
+      }
+
+      void importProjectFile(file).catch((error) => {
+        alert('Failed to import notebook archive: ' + (error as Error).message);
+      });
+    };
+    input.click();
+  }, [importProjectFile]);
+
   const renameDownloadedNotebook = useCallback((notebookId: string, nextNotebookName: string) => {
     const trimmedName = nextNotebookName.trim();
     if (!trimmedName) {
@@ -2348,15 +2597,20 @@ function App() {
   const canvasFootprint = getCanvasViewportFootprint(
     canvasSize.width,
     canvasSize.height,
-    zoom / 100,
+    displayZoom / 100,
     canvasRotation,
   );
+  const showToolRail = isMobileLayout || showPanels;
+  const showInspectorPanel = isMobileLayout ? mobileInspectorOpen : showPanels;
+  const activeRightTabLabel = rightTab === 'tablet' ? 'Pad' : rightTab.charAt(0).toUpperCase() + rightTab.slice(1);
 
   if (activePage === 'memory') {
     return (
       <DownloadedMemoryPage
         notebooks={downloadedNotebooks}
         onBackToStudio={() => setActivePage('studio')}
+        onDownloadAll={downloadAllDownloadedNotebooks}
+        onImportArchive={importDownloadedNotebookArchive}
         onImportNotebook={importDownloadedNotebook}
         onImportPage={importDownloadedPage}
         onDeleteNotebook={deleteDownloadedNotebook}
@@ -2367,14 +2621,14 @@ function App() {
 
   return (
     <TooltipProvider>
-      <div className={`${theme === 'light' ? 'light' : ''} flex h-screen flex-col overflow-hidden bg-neutral-900 text-neutral-100`}>
+      <div className={`${theme === 'light' ? 'light' : ''} app-shell flex min-h-0 flex-col overflow-hidden bg-neutral-900 text-neutral-100`}>
         {/* Top Menu Bar */}
-        <div className="flex items-center justify-between px-4 py-2 bg-neutral-800 border-b border-neutral-700">
-          <div className="flex items-center gap-4">
-            <h1 className="text-lg font-bold bg-gradient-to-r from-blue-400 to-purple-500 bg-clip-text text-transparent">
+        <div className="app-safe-top flex flex-col gap-2 border-b border-neutral-700 bg-neutral-800 px-3 py-2 lg:flex-row lg:items-center lg:justify-between lg:px-4">
+          <div className="flex min-w-0 items-center gap-3 overflow-x-auto pb-1 lg:gap-4 lg:overflow-visible lg:pb-0">
+            <h1 className="shrink-0 text-lg font-bold bg-gradient-to-r from-blue-400 to-purple-500 bg-clip-text text-transparent">
               {APP_NAME}
             </h1>
-            <div className="flex items-center gap-1">
+            <div className="flex shrink-0 items-center gap-1">
               <Tooltip>
                 <TooltipTrigger asChild>
                   <Button variant="ghost" size="icon" className="h-8 w-8"
@@ -2591,13 +2845,13 @@ function App() {
             </div>
           </div>
 
-          <div className="flex items-center gap-4">
+          <div className="flex min-w-0 flex-wrap items-center gap-2 lg:flex-nowrap lg:justify-end lg:gap-4">
             <Tooltip>
               <TooltipTrigger asChild>
                 <Button
                   variant="ghost"
                   size="sm"
-                  className="h-8 gap-2 rounded-lg border border-neutral-600/80 bg-neutral-700/80 px-3 text-xs"
+                  className="h-8 shrink-0 gap-2 rounded-lg border border-neutral-600/80 bg-neutral-700/80 px-3 text-xs"
                   onClick={() => setTheme((prev) => prev === 'light' ? 'dark' : 'light')}
                 >
                   {theme === 'light' ? <Moon className="h-3.5 w-3.5" /> : <Sun className="h-3.5 w-3.5" />}
@@ -2608,7 +2862,7 @@ function App() {
             </Tooltip>
 
             {/* Animation Controls */}
-            <div className="flex items-center gap-2 px-3 py-1 bg-neutral-700 rounded-lg">
+            <div className="flex min-w-0 flex-1 items-center gap-2 overflow-x-auto whitespace-nowrap rounded-lg bg-neutral-700 px-3 py-1 lg:flex-none lg:overflow-visible">
               <Film className="h-4 w-4 text-blue-400" />
               <span className="text-xs text-neutral-400">Render:</span>
               <Input
@@ -2751,7 +3005,7 @@ function App() {
             <Button 
               variant="default" 
               size="sm"
-              className="bg-blue-600 hover:bg-blue-700"
+              className="w-full shrink-0 bg-blue-600 hover:bg-blue-700 sm:w-auto"
               onClick={() => setShowExportDialog(true)}
             >
               <Download className="h-4 w-4 mr-2" />
@@ -2761,16 +3015,24 @@ function App() {
         </div>
 
         {/* Main Workspace */}
-        <div className="flex min-h-0 flex-1 overflow-hidden">
+        <div className="relative flex min-h-0 flex-1 flex-col overflow-hidden lg:flex-row">
           {/* Left Toolbar */}
-          <div className={`w-14 shrink-0 bg-neutral-800 border-r border-neutral-700 flex flex-col items-center py-4 gap-1 ${showPanels ? '' : 'hidden'}`}>
+          <div
+            className={`shrink-0 ${
+              showToolRail ? 'flex' : 'hidden'
+            } ${
+              isMobileLayout
+                ? 'app-mobile-dock app-safe-bottom order-3 w-full flex-row items-center gap-2 overflow-x-auto overflow-y-hidden border-t border-neutral-800 bg-neutral-900/95 px-3 py-2'
+                : 'w-14 flex-col items-center gap-1 border-r border-neutral-700 bg-neutral-800 py-4'
+            }`}
+          >
             {tools.map((tool) => (
               <Tooltip key={tool.id}>
                 <TooltipTrigger asChild>
                   <Button
                     variant={activeTool === tool.id ? 'default' : 'ghost'}
                     size="icon"
-                    className={`h-10 w-10 ${activeTool === tool.id ? 'bg-blue-600' : ''}`}
+                    className={`h-10 w-10 shrink-0 ${activeTool === tool.id ? 'bg-blue-600' : ''}`}
                     onClick={() => handleToolChange(tool.id as ToolType)}
                   >
                     <tool.icon className="h-5 w-5" />
@@ -2780,14 +3042,17 @@ function App() {
               </Tooltip>
             ))}
             
-            <Separator className="my-2 w-8" />
+            <Separator
+              orientation={isMobileLayout ? 'vertical' : 'horizontal'}
+              className={isMobileLayout ? 'mx-1 h-8' : 'my-2 w-8'}
+            />
             
             <Tooltip>
               <TooltipTrigger asChild>
                 <Button
                   variant="ghost"
                   size="icon"
-                  className={`h-10 w-10 ${showGrid ? 'bg-blue-600/30 text-blue-400' : ''}`}
+                  className={`h-10 w-10 shrink-0 ${showGrid ? 'bg-blue-600/30 text-blue-400' : ''}`}
                   onClick={() => setShowGrid(!showGrid)}
                 >
                   <Grid className="h-5 w-5" />
@@ -2796,13 +3061,13 @@ function App() {
               <TooltipContent side="right">Toggle Grid</TooltipContent>
             </Tooltip>
 
-            <div className="mt-auto" />
+            <div className={isMobileLayout ? 'ml-auto' : 'mt-auto'} />
 
             {/* PS-style foreground/background color swap */}
             <Tooltip>
               <TooltipTrigger asChild>
                 <div
-                  className="relative w-10 h-10 cursor-pointer"
+                  className="relative h-10 w-10 shrink-0 cursor-pointer"
                   onClick={() => {
                     const prev = toolSettings.color;
                     setToolSettings(s => ({ ...s, color: bgColor }));
@@ -2842,15 +3107,15 @@ function App() {
           </div>
 
           {/* Center Canvas Area */}
-          <div className="min-w-0 flex-1 flex flex-col bg-neutral-950 relative">
+          <div className="relative flex min-h-0 min-w-0 flex-1 flex-col bg-neutral-950">
             {/* Canvas Toolbar */}
-            <div className="flex items-center justify-between px-4 py-2 bg-neutral-900 border-b border-neutral-800">
-              <div className="flex items-center gap-2">
+            <div className="flex flex-col gap-2 border-b border-neutral-800 bg-neutral-900 px-3 py-2 lg:flex-row lg:items-center lg:justify-between lg:px-4">
+              <div className="flex min-w-0 items-center gap-2 overflow-x-auto whitespace-nowrap pb-1 lg:pb-0">
                 <span className="text-xs text-neutral-400">Zoom:</span>
                 <Button
                   variant="ghost"
                   size="icon"
-                  className="h-7 w-7 text-neutral-300 hover:text-white"
+                  className="h-7 w-7 shrink-0 text-neutral-300 hover:text-white"
                   onClick={() => applyZoom(zoom - ZOOM_STEP, getViewportCenterAnchor())}
                   disabled={zoom <= MIN_ZOOM}
                   title="Zoom out"
@@ -2863,12 +3128,12 @@ function App() {
                   min={MIN_ZOOM}
                   max={MAX_ZOOM}
                   step={ZOOM_STEP}
-                  className="w-32"
+                  className="w-24 shrink-0 sm:w-32"
                 />
                 <Button
                   variant="ghost"
                   size="icon"
-                  className="h-7 w-7 text-neutral-300 hover:text-white"
+                  className="h-7 w-7 shrink-0 text-neutral-300 hover:text-white"
                   onClick={() => applyZoom(zoom + ZOOM_STEP, getViewportCenterAnchor())}
                   disabled={zoom >= MAX_ZOOM}
                   title="Zoom in"
@@ -2894,7 +3159,7 @@ function App() {
                       setZoomDraft(String(zoom));
                     }
                   }}
-                  className="h-7 w-16 bg-neutral-800 px-2 text-center text-xs border-neutral-600"
+                  className="h-7 w-14 shrink-0 bg-neutral-800 px-2 text-center text-xs border-neutral-600 sm:w-16"
                   min={MIN_ZOOM}
                   max={MAX_ZOOM}
                   step={ZOOM_STEP}
@@ -2940,7 +3205,21 @@ function App() {
                   Normal
                 </button>
               </div>
-              <div className="flex items-center gap-2 text-xs text-neutral-400">
+              <div className="flex flex-wrap items-center gap-2 text-xs text-neutral-400">
+                {isMobileLayout && (
+                  <button
+                    type="button"
+                    onClick={() => setMobileInspectorOpen((open) => !open)}
+                    className={`inline-flex items-center gap-1 rounded border px-2 py-0.5 text-[10px] transition-colors ${
+                      mobileInspectorOpen
+                        ? 'border-blue-500/30 bg-blue-600/20 text-blue-300'
+                        : 'border-neutral-700 bg-neutral-800 text-neutral-400 hover:text-neutral-200'
+                    }`}
+                  >
+                    {activeRightTabLabel}
+                    <ChevronDown className={`h-3 w-3 transition-transform ${mobileInspectorOpen ? 'rotate-180' : ''}`} />
+                  </button>
+                )}
                 <button
                   onClick={() => setShowRulers((value) => !value)}
                   className={`px-2 py-0.5 rounded text-[10px] border transition-colors ${showRulers ? 'bg-blue-600/20 border-blue-500/30 text-blue-300' : 'bg-neutral-800 border-neutral-700 text-neutral-500 hover:text-neutral-300'}`}
@@ -2961,24 +3240,24 @@ function App() {
                     Drawing Tablet
                   </span>
                 )}
-                <span>{canvasSize.width} x {canvasSize.height} px</span>
-                <span>{canvasRotation}deg</span>
-                <span className="text-[10px] text-neutral-500">Scroll to zoom · Space to pan</span>
+                <span className="hidden sm:inline">{canvasSize.width} x {canvasSize.height} px</span>
+                <span className="hidden sm:inline">{canvasRotation}deg</span>
+                <span className="app-canvas-help hidden md:inline text-[10px] text-neutral-500">Scroll to zoom · Space to pan</span>
               </div>
             </div>
             
             {/* Canvas with optional rulers */}
             <div className="flex-1 flex flex-col min-h-0">
               {showRulers && (
-                <Ruler direction="horizontal" size={canvasSize.width} zoom={zoom / 100} cursor={cursorPos?.x ?? null} />
+                <Ruler direction="horizontal" size={canvasSize.width} zoom={displayZoom / 100} cursor={cursorPos?.x ?? null} />
               )}
               <div className="flex flex-1 min-h-0">
                 {showRulers && (
-                  <Ruler direction="vertical" size={canvasSize.height} zoom={zoom / 100} cursor={cursorPos?.y ?? null} />
+                  <Ruler direction="vertical" size={canvasSize.height} zoom={displayZoom / 100} cursor={cursorPos?.y ?? null} />
                 )}
             <div
               ref={canvasViewportRef}
-              className="flex-1 overflow-auto"
+              className="app-canvas-stage flex-1 overflow-auto"
               style={{ cursor: panDragRef.current ? 'grabbing' : isSpaceDown ? 'grab' : undefined }}
               onMouseDown={(e) => {
                 if (!isSpaceDown && e.button !== 1) return;
@@ -3072,43 +3351,53 @@ function App() {
               }}
             >
               <div style={{ display: 'grid', placeItems: 'center', minWidth: `calc(100% + ${canvasFootprint.width}px)`, minHeight: `calc(100% + ${canvasFootprint.height}px)`, padding: 32 }}>
-              <CanvasEngine
-                ref={canvasEngineRef}
-                width={canvasSize.width}
-                height={canvasSize.height}
-                layers={layers}
-                activeLayerId={activeLayerId}
-                activeTool={activeTool}
-                toolSettings={toolSettings}
-                backgroundSettings={backgroundSettings}
-                zoom={zoom / 100}
-                showGrid={showGrid}
-                onStrokeComplete={handleStrokeComplete}
-                onColorPick={(color) => {
-                  setPreviousColor(toolSettings.color);
-                  setToolSettings(prev => ({ ...prev, color }));
-                  addRecentColor(color);
+              <div
+                ref={canvasStageRef}
+                style={{
+                  width: canvasFootprint.width,
+                  height: canvasFootprint.height,
+                  display: 'grid',
+                  placeItems: 'center',
                 }}
-                onCursorMove={(x, y) => setCursorPos(x >= 0 ? { x, y } : null)}
-                onLayerVisibilityFix={updateLayer}
-                onSelectionChange={setSelection}
-                onDrawingStateChange={handleCanvasDrawingStateChange}
-                selection={selection}
-                symmetryX={symmetryX}
-                bgColor={bgColor}
-                onSaveState={saveState}
-                penCursor={isTabletStreaming ? blePenCursor : null}
-                viewRotation={canvasRotation}
-              />
+              >
+                <CanvasEngine
+                  ref={canvasEngineRef}
+                  width={canvasSize.width}
+                  height={canvasSize.height}
+                  layers={layers}
+                  activeLayerId={activeLayerId}
+                  activeTool={activeTool}
+                  toolSettings={toolSettings}
+                  backgroundSettings={backgroundSettings}
+                  zoom={displayZoom / 100}
+                  showGrid={showGrid}
+                  onStrokeComplete={handleStrokeComplete}
+                  onColorPick={(color) => {
+                    setPreviousColor(toolSettings.color);
+                    setToolSettings(prev => ({ ...prev, color }));
+                    addRecentColor(color);
+                  }}
+                  onCursorMove={(x, y) => setCursorPos(x >= 0 ? { x, y } : null)}
+                  onLayerVisibilityFix={updateLayer}
+                  onSelectionChange={setSelection}
+                  onDrawingStateChange={handleCanvasDrawingStateChange}
+                  selection={selection}
+                  symmetryX={symmetryX}
+                  bgColor={bgColor}
+                  onSaveState={saveState}
+                  penCursor={isTabletStreaming ? blePenCursor : null}
+                  viewRotation={canvasRotation}
+                />
+              </div>
               </div>
             </div>
 
             {/* Navigator mini-map */}
-            {zoom > 100 && (
+            {displayZoom > 100 && !isMobileLayout && (
               <NavigatorMinimap
                 canvasWidth={canvasSize.width}
                 canvasHeight={canvasSize.height}
-                zoom={zoom / 100}
+                zoom={displayZoom / 100}
                 viewportRef={canvasViewportRef}
                 layers={layers}
               />
@@ -3146,13 +3435,38 @@ function App() {
           </div>
 
           {/* Right Panels */}
-          <div className={`w-72 shrink-0 bg-neutral-800 border-l border-neutral-700 flex flex-col overflow-hidden ${showPanels ? '' : 'hidden'}`}>
+          <div
+            className={`${
+              showInspectorPanel ? 'flex' : 'hidden'
+            } ${
+              isMobileLayout
+                ? 'app-mobile-panel app-safe-bottom absolute inset-x-0 z-20 max-h-[min(55vh,30rem)] flex-col overflow-hidden rounded-t-3xl border border-neutral-700 border-b-0 bg-neutral-800/95 shadow-2xl backdrop-blur'
+                : 'w-72 shrink-0 flex-col overflow-hidden border-l border-neutral-700 bg-neutral-800'
+            }`}
+          >
+            {isMobileLayout && (
+              <div className="flex items-center justify-between border-b border-neutral-700/80 px-4 py-2 text-[11px] uppercase tracking-[0.16em] text-neutral-500">
+                <span>Studio Controls</span>
+                <button
+                  type="button"
+                  onClick={() => setMobileInspectorOpen(false)}
+                  className="rounded px-2 py-1 text-[10px] text-neutral-400 transition-colors hover:bg-neutral-700 hover:text-neutral-100"
+                >
+                  Close
+                </button>
+              </div>
+            )}
             {/* Tab bar */}
             <div className="app-right-tabs shrink-0">
               {(['layers', 'tools', 'color', 'tablet'] as const).map((tab) => (
                 <button
                   key={tab}
-                  onClick={() => setRightTab(tab)}
+                  onClick={() => {
+                    setRightTab(tab);
+                    if (isMobileLayout) {
+                      setMobileInspectorOpen(true);
+                    }
+                  }}
                   className={`app-right-tab ${
                     tab === 'tablet' && !hasTabletConnection ? 'app-right-tab-attention' : ''
                   } ${
@@ -3283,7 +3597,7 @@ function App() {
                         onClick={() => setShowBackgroundLayerSettings((value) => !value)}
                         className={`flex h-11 w-full items-center border-b border-neutral-700/50 text-left transition-colors ${
                           showBackgroundLayerSettings
-                            ? 'bg-[#2a4a7f]'
+                            ? 'app-layer-active'
                             : 'bg-neutral-800 hover:bg-neutral-700/50'
                         }`}
                       >
@@ -3455,8 +3769,8 @@ function App() {
         </div>
 
         {/* Status Bar */}
-        <div className="flex items-center justify-between px-4 py-0.5 bg-neutral-800 border-t border-neutral-700 text-[10px] text-neutral-500 shrink-0">
-          <div className="flex items-center gap-4">
+        <div className="flex shrink-0 flex-wrap items-center justify-between gap-x-4 gap-y-1 border-t border-neutral-700 bg-neutral-800 px-3 py-1 text-[10px] text-neutral-500 lg:px-4 lg:py-0.5">
+          <div className="flex min-w-0 flex-wrap items-center gap-x-3 gap-y-1">
             {cursorPos && <span className="font-mono tabular-nums">X: {Math.round(cursorPos.x)}, Y: {Math.round(cursorPos.y)}</span>}
             <button
               type="button"
@@ -3467,10 +3781,10 @@ function App() {
               {canvasSize.width} × {canvasSize.height} px
             </button>
           </div>
-          <div className="flex items-center gap-4">
-            <span>{layers.find(l => l.id === activeLayerId)?.name ?? '—'}</span>
+          <div className="ml-auto flex min-w-0 flex-wrap items-center justify-end gap-x-3 gap-y-1 text-right">
+            <span className="max-w-[9rem] truncate">{layers.find(l => l.id === activeLayerId)?.name ?? '—'}</span>
             <span>{zoom}%</span>
-            <span className="text-neutral-600">Tab: toggle panels · ?: shortcuts</span>
+            <span className="app-status-help hidden xl:inline text-neutral-600">Tab: toggle panels · ?: shortcuts</span>
           </div>
         </div>
 

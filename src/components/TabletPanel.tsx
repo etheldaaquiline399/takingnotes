@@ -94,6 +94,16 @@ function resolveWacomBackendOrientation(orientation: WacomLiveOrientation): Waco
   return orientation;
 }
 
+function describeWacomSyncStep(context: 'connect' | 'download' | 'register') {
+  if (context === 'register') {
+    return 'Tuhi registration step: hold the notebook button until the blue LED blinks, pick the device in Chrome, then press the button once to confirm registration.';
+  }
+  if (context === 'download') {
+    return 'Tuhi sync step: if the notebook does not start syncing immediately, make sure the LED is blue, then press the notebook button once to switch it back to green and retry the download.';
+  }
+  return 'Tuhi sync step: if pairing pauses after Chrome shows the device, make sure the LED is blue, then press the notebook button once to switch it back to green.';
+}
+
 export function TabletPanel({
   canvasWidth,
   canvasHeight,
@@ -157,6 +167,10 @@ export function TabletPanel({
   const addLog = useCallback((msg: string) => {
     setLog((prev) => [...prev.slice(-200), msg]);
   }, []);
+
+  const addWacomSyncHint = useCallback((context: 'connect' | 'download' | 'register') => {
+    addLog(describeWacomSyncStep(context));
+  }, [addLog]);
 
   useEffect(() => {
     if (showLog) {
@@ -372,6 +386,7 @@ export function TabletPanel({
       setDeviceCapabilities(getBackendCapabilities(wacom));
       setActiveInputMode(null);
       activeDeviceTypeRef.current = 'wacom';
+      addWacomSyncHint('connect');
       await wacom.connect(uuid);
       persistWacomUuid(uuid);
       setWacomUuid(uuid);
@@ -386,7 +401,7 @@ export function TabletPanel({
       setStatusText('Failed');
       setTimeout(() => setStatusText('No device'), 3000);
     }
-  }, [status, wacomUuid, disconnectBackends, resetPanelState, addLog, syncStatusFromBackend, handleWacomPen, onConnectionStateChange, onDeviceConnected]);
+  }, [status, wacomUuid, addWacomSyncHint, disconnectBackends, resetPanelState, addLog, syncStatusFromBackend, handleWacomPen, onConnectionStateChange, onDeviceConnected]);
 
   const registerWacom = useCallback(async () => {
     if (status === 'connecting') {
@@ -411,7 +426,7 @@ export function TabletPanel({
       setActiveInputMode(null);
       activeDeviceTypeRef.current = 'wacom';
 
-      addLog('Register flow: put the Wacom notebook into registration mode first by holding the button until the blue LED blinks.');
+      addWacomSyncHint('register');
       const uuid = await wacom.registerNewUuid();
       persistWacomUuid(uuid);
       setWacomUuid(uuid);
@@ -426,7 +441,7 @@ export function TabletPanel({
       setStatusText('Failed');
       setTimeout(() => setStatusText('No device'), 3000);
     }
-  }, [status, disconnectBackends, resetPanelState, addLog, syncStatusFromBackend, handleWacomPen]);
+  }, [status, addWacomSyncHint, disconnectBackends, resetPanelState, addLog, syncStatusFromBackend, handleWacomPen]);
 
   const disconnect = useCallback(async () => {
     await disconnectBackends();
@@ -594,6 +609,7 @@ export function TabletPanel({
       setStatus('downloading');
       setStatusText('Downloading...');
       setActiveInputMode('paper');
+      addWacomSyncHint('download');
 
       const pages = await (wacomRef.current?.downloadPages() ?? Promise.resolve([]));
       setPageCount(pages.length);
@@ -617,12 +633,19 @@ export function TabletPanel({
       setStatusText('Connected');
       setActiveInputMode(null);
     } catch (e: any) { // eslint-disable-line @typescript-eslint/no-explicit-any
-      addLog(`Download error: ${e?.message ?? e}`);
+      const message = `${e?.message ?? e}`;
+      addLog(`Download error: ${message}`);
+      if (/INVALID_STATE|button press/i.test(message)) {
+        addWacomSyncHint('download');
+        setStatusText('Press notebook button');
+      }
       setStatus('connected');
-      setStatusText('Connected');
+      if (!/INVALID_STATE|button press/i.test(message)) {
+        setStatusText('Connected');
+      }
       setActiveInputMode(null);
     }
-  }, [deviceName, wacomUuid, addLog, saveDownloadedNotebook]);
+  }, [deviceName, wacomUuid, addWacomSyncHint, addLog, saveDownloadedNotebook]);
 
   const requestCanvasMatch = useCallback(() => {
     if (!onDeviceConnected) {
@@ -707,20 +730,35 @@ export function TabletPanel({
     if (!isWacomFlow) return null;
 
     if (status === 'connecting') {
+      if (/button/i.test(statusText)) {
+        return {
+          tone: 'amber' as const,
+          title: 'Press the notebook button',
+          body: 'Follow the Tuhi sync step: make sure the LED is blue, then press the notebook button once to switch it back to green.',
+        };
+      }
       if (/register/i.test(statusText)) {
         return {
           tone: 'amber' as const,
           title: 'Wacom/tUHI registration in progress',
-          body: 'If the blue LED is not already blinking, hold the notebook button until it blinks. After Chrome shows the device, press the button once to confirm registration.',
+          body: 'Hold the notebook button until the blue LED blinks. After Chrome shows the device and registration is waiting for confirmation, press the button once.',
         };
       }
       if (/scan|connect/i.test(statusText)) {
         return {
           tone: 'blue' as const,
           title: 'Connecting to Wacom notebook',
-          body: 'Choose the Wacom device in Chrome. If the notebook wakes up but does not finish connecting, press the button once.',
+          body: 'Choose the Wacom device in Chrome. If pairing pauses, follow the Tuhi sync step: make sure the LED is blue, then press the button once to switch it back to green.',
         };
       }
+    }
+
+    if (status === 'downloading' && activeDeviceType === 'wacom') {
+      return {
+        tone: 'amber' as const,
+        title: 'Wacom notebook sync in progress',
+        body: 'If notebook sync does not start immediately, follow the Tuhi sync step: make sure the LED is blue, then press the notebook button once to switch it back to green.',
+      };
     }
 
     if (status === 'connected' && activeDeviceType === 'wacom') {
@@ -735,7 +773,7 @@ export function TabletPanel({
       return {
         tone: 'amber' as const,
         title: 'First-time Wacom/tUHI setup',
-        body: '1. Hold the notebook button until the blue LED blinks. 2. Click Register UUID. 3. Pick the device in Chrome. 4. Press the button once when prompted.',
+        body: '1. Hold the notebook button until the blue LED blinks. 2. Click Register UUID. 3. Pick the device in Chrome. 4. Press the button once when registration asks for confirmation.',
       };
     }
 
@@ -744,14 +782,14 @@ export function TabletPanel({
 
   return (
     <div className="select-none space-y-0 text-xs">
-      <div className="mb-3 flex items-center gap-2 rounded-xl px-3 py-2" style={{ background: 'linear-gradient(180deg, rgba(58,58,58,0.96) 0%, rgba(34,34,34,0.96) 100%)', border: '1px solid #474747', boxShadow: 'inset 0 1px 0 rgba(255,255,255,0.03)' }}>
+      <div className="tablet-status-card mb-3 flex items-center gap-2 rounded-xl border px-3 py-2 shadow-[inset_0_1px_0_rgba(255,255,255,0.03)]">
         <div className="h-2 w-2 shrink-0 rounded-full" style={{ background: dotColor, boxShadow: status === 'streaming' ? `0 0 6px ${dotColor}` : 'none' }} />
         <span className="flex-1 truncate text-neutral-200" style={{ fontSize: 12, fontWeight: 600 }}>{deviceName || statusText}</span>
         {deviceName && <span className="text-neutral-500" style={{ fontSize: 10.5 }}>{statusText}</span>}
       </div>
 
       {!hasBLE && (
-        <div className="mb-2 rounded px-2 py-2 text-yellow-400/80" style={{ background: '#3a3520', border: '1px solid #554820', fontSize: 10 }}>
+        <div className="tablet-warning mb-2 rounded border px-2 py-2 text-yellow-400/80" style={{ fontSize: 10 }}>
           Web Bluetooth not available. Needs Chrome or Edge on desktop.
         </div>
       )}
@@ -947,7 +985,7 @@ export function TabletPanel({
               <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" style={{ transform: showLog ? 'rotate(180deg)' : 'rotate(0)', transition: 'transform 0.15s' }}><polyline points="6,9 12,15 18,9" /></svg>
             </button>
             {showLog && (
-              <ScrollArea className="mt-1 h-24 rounded" style={{ background: '#141414', border: '1px solid #333' }}>
+              <ScrollArea className="tablet-log-surface mt-1 h-24 rounded border">
                 <div className="space-y-px p-2 font-mono" style={{ fontSize: 9.5 }}>
                   {log.length === 0 && <div className="italic text-neutral-600">No messages yet</div>}
                   {log.map((line, index) => <div key={index} className={/error|failed/i.test(line) ? 'text-red-400/70' : 'text-neutral-500'}>{line}</div>)}
@@ -957,7 +995,7 @@ export function TabletPanel({
             )}
           </div>
 
-          <button onClick={disconnect} className="flex w-full items-center justify-center gap-1.5 rounded-xl px-3 py-2 text-neutral-500 transition-colors hover:text-red-400" style={{ background: 'linear-gradient(180deg, #2e2e2e 0%, #262626 100%)', border: '1px solid #444', fontSize: 10.5 }}>
+          <button onClick={disconnect} className="tablet-disconnect flex w-full items-center justify-center gap-1.5 rounded-xl border px-3 py-2 text-neutral-500 transition-colors hover:text-red-400" style={{ fontSize: 10.5 }}>
             <svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><path d="M18 6L6 18M6 6l12 12" /></svg>
             Disconnect
           </button>
@@ -1126,14 +1164,9 @@ function PSButton({ onClick, disabled, active, children }: { onClick: () => void
     <button
       onClick={onClick}
       disabled={disabled}
-      className="flex w-full items-center justify-center gap-2 rounded-xl px-3 py-2.5 transition-all disabled:opacity-40"
-      style={{
-        background: active ? 'linear-gradient(180deg, #1a3a5a 0%, #142a44 100%)' : 'linear-gradient(180deg, #3c3c3c 0%, #303030 100%)',
-        border: `1px solid ${active ? '#3b82f6' : '#555'}`,
-        boxShadow: active ? '0 0 8px rgba(59,130,246,0.25)' : 'inset 0 1px 0 rgba(255,255,255,0.04)',
-        fontSize: 11.5,
-        fontWeight: 600,
-      }}
+      className={`tablet-ps-button flex w-full items-center justify-center gap-2 rounded-xl border px-3 py-2.5 text-[11.5px] font-semibold transition-all disabled:opacity-40 ${
+        active ? 'tablet-ps-button-active' : ''
+      }`}
     >
       {children}
     </button>
@@ -1155,8 +1188,7 @@ function DeviceButton({ onClick, disabled, iconBg, iconBorder, iconStroke, iconP
     <button
       onClick={onClick}
       disabled={disabled}
-      className="flex w-full items-center gap-3 rounded-xl px-3 py-2.5 text-left transition-all disabled:opacity-40"
-      style={{ background: 'linear-gradient(180deg, #363636 0%, #2c2c2c 100%)', border: '1px solid #4a4a4a', boxShadow: 'inset 0 1px 0 rgba(255,255,255,0.03)' }}
+      className="tablet-device-button flex w-full items-center gap-3 rounded-xl border px-3 py-2.5 text-left transition-all disabled:opacity-40"
     >
       <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg" style={{ background: iconBg, border: `1px solid ${iconBorder}` }}>
         <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke={iconStroke} strokeWidth="1.75" strokeLinecap="round" strokeLinejoin="round">{iconPath}</svg>
@@ -1167,8 +1199,7 @@ function DeviceButton({ onClick, disabled, iconBg, iconBorder, iconStroke, iconP
       </div>
       {meta && (
         <div
-          className="shrink-0 rounded-full border px-2 py-1 text-[9px] uppercase tracking-[0.08em] text-neutral-300"
-          style={{ borderColor: '#555', background: 'rgba(255,255,255,0.03)' }}
+          className="tablet-device-meta shrink-0 rounded-full border px-2 py-1 text-[9px] uppercase tracking-[0.08em] text-neutral-300"
         >
           {meta}
         </div>

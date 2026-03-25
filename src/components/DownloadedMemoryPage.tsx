@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
-import { BookCopy, HardDriveDownload, Import, Layers2, NotebookPen, Trash2 } from 'lucide-react';
+import { BookCopy, Download, HardDriveDownload, Import, Layers2, NotebookPen, Trash2, Upload } from 'lucide-react';
 
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -8,6 +8,8 @@ import type { DownloadedMemoryNotebook, DownloadedMemoryPage as DownloadedMemory
 interface DownloadedMemoryPageProps {
   notebooks: DownloadedMemoryNotebook[];
   onBackToStudio: () => void;
+  onDownloadAll: () => void;
+  onImportArchive: () => void;
   onImportNotebook: (notebookId: string) => void;
   onImportPage: (notebookId: string, pageId: string) => void;
   onDeleteNotebook: (notebookId: string) => void;
@@ -108,6 +110,8 @@ function PagePreview({ page }: { page: DownloadedMemoryPageData }) {
 export function DownloadedMemoryPage({
   notebooks,
   onBackToStudio,
+  onDownloadAll,
+  onImportArchive,
   onImportNotebook,
   onImportPage,
   onDeleteNotebook,
@@ -155,31 +159,50 @@ export function DownloadedMemoryPage({
   };
 
   return (
-    <div className="flex h-screen flex-col overflow-hidden bg-neutral-950 text-neutral-100">
-      <div className="border-b border-neutral-800 bg-[radial-gradient(circle_at_top_left,#1f3a5b_0%,#101521_42%,#090b10_100%)] px-6 py-5">
-        <div className="flex flex-wrap items-start justify-between gap-4">
+    <div className="app-shell flex min-h-0 flex-col overflow-hidden bg-neutral-950 text-neutral-100">
+      <div className="memory-library-hero app-safe-top border-b border-neutral-800 px-4 py-4 lg:px-6 lg:py-5">
+        <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
           <div className="space-y-2">
-            <div className="flex items-center gap-2 text-sm text-blue-300">
+            <div className="memory-library-kicker flex items-center gap-2 text-sm">
               <HardDriveDownload className="h-4 w-4" />
               Notebook Downloads
             </div>
-            <h1 className="text-3xl font-semibold tracking-tight text-white">Downloaded notebook library</h1>
+            <h1 className="text-2xl font-semibold tracking-tight text-neutral-100 lg:text-3xl">Downloaded notebook library</h1>
             <p className="max-w-2xl text-sm text-neutral-400">
               Pages downloaded from Huion and Wacom/tUHI notebooks are stored here as separate notebook batches before you import them onto the canvas.
             </p>
           </div>
-          <Button
-            variant="outline"
-            className="border-neutral-700 bg-neutral-900/80 text-neutral-100 hover:bg-neutral-800"
-            onClick={onBackToStudio}
-          >
-            Back to studio
-          </Button>
+          <div className="flex w-full flex-wrap gap-2 sm:w-auto sm:justify-end">
+            <Button
+              variant="outline"
+              className="w-full border-neutral-700 bg-neutral-900/80 text-neutral-100 hover:bg-neutral-800 sm:w-auto"
+              onClick={onImportArchive}
+            >
+              <Upload className="h-4 w-4" />
+              Import archive
+            </Button>
+            <Button
+              variant="outline"
+              className="w-full border-neutral-700 bg-neutral-900/80 text-neutral-100 hover:bg-neutral-800 sm:w-auto"
+              onClick={onDownloadAll}
+              disabled={notebooks.length === 0}
+            >
+              <Download className="h-4 w-4" />
+              Download all
+            </Button>
+            <Button
+              variant="outline"
+              className="w-full border-neutral-700 bg-neutral-900/80 text-neutral-100 hover:bg-neutral-800 sm:w-auto"
+              onClick={onBackToStudio}
+            >
+              Back to studio
+            </Button>
+          </div>
         </div>
       </div>
 
-      <div className="grid min-h-0 flex-1 grid-cols-[320px,minmax(0,1fr)]">
-        <aside className="overflow-y-auto border-r border-neutral-800 bg-neutral-900/60 p-4">
+      <div className="grid min-h-0 flex-1 grid-cols-1 lg:grid-cols-[320px,minmax(0,1fr)]">
+        <aside className="max-h-[40vh] overflow-y-auto border-b border-neutral-800 bg-neutral-900/60 p-4 lg:max-h-none lg:border-b-0 lg:border-r">
           <div className="mb-3 flex items-center gap-2 text-[11px] uppercase tracking-[0.2em] text-neutral-500">
             <NotebookPen className="h-3.5 w-3.5" />
             Downloaded notebooks
@@ -219,14 +242,14 @@ export function DownloadedMemoryPage({
           )}
         </aside>
 
-        <main className="min-h-0 overflow-y-auto p-6">
+        <main className="min-h-0 overflow-y-auto p-4 lg:p-6">
           {!selectedNotebook ? (
             <div className="flex h-full items-center justify-center rounded-3xl border border-dashed border-neutral-800 bg-neutral-900/40 text-sm text-neutral-500">
               No downloaded notebooks yet.
             </div>
           ) : (
             <div className="space-y-6">
-              <div className="rounded-3xl border border-neutral-800 bg-[linear-gradient(180deg,rgba(20,23,31,0.98)_0%,rgba(12,14,20,0.98)_100%)] p-5">
+              <div className="memory-library-surface rounded-3xl border border-neutral-800 p-5">
                 <div className="flex flex-wrap items-start justify-between gap-4">
                   <div className="space-y-2">
                     {isRenaming ? (
@@ -242,7 +265,7 @@ export function DownloadedMemoryPage({
                               setIsRenaming(false);
                             }
                           }}
-                          className="h-10 w-[280px] border-neutral-700 bg-neutral-950 text-base font-semibold text-white"
+                          className="h-10 w-full border-neutral-700 bg-neutral-950 text-base font-semibold text-white sm:w-[280px]"
                           placeholder="Notebook name"
                         />
                         <Button
@@ -265,7 +288,7 @@ export function DownloadedMemoryPage({
                       </div>
                     ) : (
                       <div className="flex flex-wrap items-center gap-2">
-                        <h2 className="text-2xl font-semibold text-white">{selectedNotebook.notebookName}</h2>
+                        <h2 className="text-2xl font-semibold text-neutral-100">{selectedNotebook.notebookName}</h2>
                         <Button
                           variant="outline"
                           className="border-neutral-700 bg-neutral-900/70 text-neutral-100 hover:bg-neutral-800"
@@ -280,10 +303,10 @@ export function DownloadedMemoryPage({
                       Canvas source size {selectedNotebook.pageWidth} x {selectedNotebook.pageHeight}
                     </div>
                   </div>
-                  <div className="flex flex-wrap gap-2">
+                  <div className="flex w-full flex-wrap gap-2 sm:w-auto sm:justify-end">
                     <Button
                       variant="outline"
-                      className="border-neutral-700 bg-neutral-900 text-neutral-100 hover:bg-neutral-800"
+                      className="w-full border-neutral-700 bg-neutral-900 text-neutral-100 hover:bg-neutral-800 sm:w-auto"
                       onClick={() => onImportNotebook(selectedNotebook.id)}
                     >
                       <Layers2 className="h-4 w-4" />
@@ -291,7 +314,7 @@ export function DownloadedMemoryPage({
                     </Button>
                     <Button
                       variant="outline"
-                      className="border-red-900 bg-red-950/30 text-red-200 hover:bg-red-950/50"
+                      className="w-full border-red-900 bg-red-950/30 text-red-200 hover:bg-red-950/50 sm:w-auto"
                       onClick={() => onDeleteNotebook(selectedNotebook.id)}
                     >
                       <Trash2 className="h-4 w-4" />
@@ -304,9 +327,9 @@ export function DownloadedMemoryPage({
               <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
                 {selectedNotebook.pages.map((page) => (
                   <section key={page.id} className="rounded-3xl border border-neutral-800 bg-neutral-900/80 p-4">
-                    <div className="mb-4 flex items-center justify-between gap-3">
+                    <div className="mb-4 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
                       <div>
-                        <div className="text-sm font-medium text-white">Page {page.pageNum + 1}</div>
+                        <div className="text-sm font-medium text-neutral-100">Page {page.pageNum + 1}</div>
                         <div className="text-xs text-neutral-500">
                           {page.strokeCount} stroke{page.strokeCount === 1 ? '' : 's'} - {page.pointCount.toLocaleString()} points
                         </div>
@@ -314,7 +337,7 @@ export function DownloadedMemoryPage({
                       <Button
                         variant="outline"
                         size="sm"
-                        className="border-neutral-700 bg-neutral-950 text-neutral-100 hover:bg-neutral-800"
+                        className="w-full border-neutral-700 bg-neutral-950 text-neutral-100 hover:bg-neutral-800 sm:w-auto"
                         onClick={() => onImportPage(selectedNotebook.id, page.id)}
                       >
                         <Import className="h-4 w-4" />
